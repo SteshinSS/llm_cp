@@ -1,0 +1,9 @@
+pip-tools
+numpy 
+pandas
+matplotlib
+ipykernel
+flask 
+flask-socketio
+docker
+ruff
