@@ -11,3 +11,4 @@ tqdm
 GitPython
 openai
 python-dotenv
+scikit-learn
