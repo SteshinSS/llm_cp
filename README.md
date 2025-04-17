@@ -9,11 +9,17 @@ conda activate llm_cp
 pip install -r requirements.txt
 ```
 
+To use models API you need to create `.env` file with keys:
+```
+OPENAI_API_KEY=sk-proj....
+```
+
 Each simulation may require additional setup, as indicated below.
 
 
 ## Simulations
 1) Gomoku
+
 Gomoku is a generalization of Tic-Tac-Toe to an H×W grid, where the goal is to place N stones in a row. Additionally, the board can include blocked cells as obstacles.
 To run Gomoku simulations, install the Gomoku bot and use `simulations/gomoku.py`:
 ```
@@ -40,6 +46,8 @@ docker build --pull --rm -f "Dockerfile" -t gomokuai:latest .
 
 
 ## Development
+We use ruff for code formatting.
+
 We use pip-tools to pin dependencies. If you need to add a new package, just add it to `requirements.in` and run:
 ```
 conda activate llm_cp
@@ -47,3 +55,9 @@ pip-compile
 pip-sync
 ```
 That will update `requirements.txt` and update your current environment.
+
+We keep the API keys in `.env` file, which is in `.gitignore` and should never be commited to the repo. To use the keys in code:
+```Python
+from dotenv import load_dotenv
+load_dotenv()
+```

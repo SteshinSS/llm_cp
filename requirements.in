@@ -7,3 +7,7 @@ flask
 flask-socketio
 docker
 ruff
+tqdm
+GitPython
+openai
+python-dotenv

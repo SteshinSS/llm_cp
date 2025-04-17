@@ -20,6 +20,7 @@ import random
 import sys
 import time
 from dataclasses import dataclass
+from copy import deepcopy
 
 import docker
 import numpy as np
@@ -138,7 +139,9 @@ def print_board_state(game_state: GameState) -> None:
 
 
 def start_docker_container(
-    image: str = "gomokuai:latest", host_port: int = 7682
+    args,
+    image: str = "gomokuai:latest",
+    host_port: int = 7682,
 ) -> docker.models.containers.Container:
     """
     Starts a Docker container running the Gomoku bot.
@@ -154,7 +157,8 @@ def start_docker_container(
     """
     client = docker.from_env()
     try:
-        print("Starting Gomoku bot container...")
+        if args.v:
+            print("Starting Gomoku bot container...")
         container = client.containers.run(
             image, ports={"7682/tcp": host_port}, detach=True
         )
@@ -178,16 +182,16 @@ def parse_parameters() -> argparse.Namespace:
         description="Simulate a Gomoku game between two bots."
     )
     parser.add_argument(
-        "--w", type=int, default=15, help="Width of the board (default: 15)"
+        "-W", type=int, default=15, help="Width of the board (default: 15)"
     )
     parser.add_argument(
-        "--h",
+        "-H",
         type=int,
         default=0,
         help="Height of the board. If 0, the board is square (default: 0)",
     )
     parser.add_argument(
-        "--n", type=int, default=5, help="Number of stones in a row to win (default: 5)"
+        "-n", type=int, default=5, help="Number of stones in a row to win (default: 5)"
     )
     parser.add_argument(
         "--time_limit",
@@ -196,15 +200,35 @@ def parse_parameters() -> argparse.Namespace:
         help="Time limit per turn for the bot in seconds (default: 0.5)",
     )
     parser.add_argument(
+        "--generate_cf",
+        action="store_true",
+        help="If used, generates two runs that are splitted after -b steps.",
+    )
+    parser.add_argument(
+        "-b",
+        type=int,
+        default=15,
+        help="Branching point. The number of steps to generate the second wave of random blocks. The universe is splitted into two if --generate_cf used.",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default="game_history.txt",
         help="Path to the game history log file (default: game_history.txt)",
     )
-    parser.add_argument("--v", action="store_true", help="Print states in stdout")
+    parser.add_argument(
+        "--init_blocks",
+        type=int,
+        default=15,
+        help="Block to spawn at the map initiation.",
+    )
+    parser.add_argument(
+        "--add_blocks", type=int, default=15, help="Block to spawn during the run."
+    )
+    parser.add_argument("-v", action="store_true", help="Print states in stdout")
     args = parser.parse_args()
-    if args.h == 0:
-        args.h = args.w  # Make the board square if height is unspecified.
+    if args.H == 0:
+        args.H = args.W  # Make the board square if height is unspecified.
     return args
 
 
@@ -276,9 +300,7 @@ def board_to_cmd(game_state: GameState, args: argparse.Namespace) -> list[str]:
     return cmd
 
 
-def spawn_random_block(
-    game_state: GameState, board_h: int, board_w: int, prob: float = 1.0
-) -> int | None:
+def spawn_one_random_block(game_state: GameState, prob: float = 1.0) -> int | None:
     """
     Randomly places a block (value 3) on the board if a free cell is available.
 
@@ -288,34 +310,35 @@ def spawn_random_block(
 
     Args:
         game_state (GameState): The current game state.
-        board_h (int): Height of the board.
-        board_w (int): Width of the board.
         prob (float): Probability to place a block (default: 1.0).
 
     Returns:
         int | None: The board index where the block was placed, or None if not placed.
     """
+    h, w = game_state.board.shape
     free_positions = [
-        (i, j)
-        for i in range(board_h)
-        for j in range(board_w)
-        if game_state.board[i, j] == 0
+        (i, j) for i in range(h) for j in range(w) if game_state.board[i, j] == 0
     ]
     if not free_positions:
         return None
     row, col = random.choice(free_positions)
     if random.uniform(0, 1) < prob:
         game_state.next_step(GameEvent(row, col, stone=3))  # place a block
-        return row * board_w + col
+        return row * w + col
     return None
+
+
+def spawn_random_blocks(game_state, n=10, prob=1.0):
+    for _ in range(n):
+        spawn_one_random_block(game_state)
 
 
 def main() -> None:
     args = parse_parameters()
-    game_state = GameState(args.h, args.w)
+    game_state = GameState(args.H, args.W)
 
     # Open the game history file using a context manager for safe resource handling.
-    container = start_docker_container()
+    container = start_docker_container(args)
     sio = socketio.Client()
 
     # Global flags for simulation control.
@@ -356,7 +379,7 @@ def main() -> None:
         if pos is None:
             return
 
-        row, col = pos_to_coords(pos, args.h, args.w)
+        row, col = pos_to_coords(pos, args.H, args.W)
 
         if game_state.board[row, col] == stone:
             # When you start the game with a non-empty board,
@@ -399,7 +422,15 @@ def main() -> None:
         # Check for signals of game termination.
         lowered = msg.lower()
         if any(x in lowered for x in ("stop", "finished", "won")):
-            print("Game over detected from log event.")
+            if args.v:
+                print("Game over detected from log event.")
+            if "won" in lowered:
+                winner = lowered.split()[6]  # the winner player
+                game_state.history.append(winner)
+            elif "draw" in lowered:
+                game_state.history.append("draw")
+            else:
+                print("Unknown message:", lowered)
             is_simulation_over = True
 
     @sio.on("log error")
@@ -429,6 +460,12 @@ def main() -> None:
     #   2. We update our GameState accordingly.
     #   3. We emit a "new game" event with the updated state.
     # This loop continues until a game-over condition is detected.
+    spawn_random_blocks(game_state, n=args.init_blocks)
+    if args.v:
+        print("Initial board:")
+        print(board_visual(game_state.board))
+
+    runs = [game_state]
     try:
         while not is_simulation_over:
             is_server_ready = False
@@ -439,20 +476,41 @@ def main() -> None:
             while not is_server_ready:
                 time.sleep(0.1)
 
-            # After each move, optionally add a random block to the board.
-            block_index = spawn_random_block(game_state, args.h, args.w)
-            if block_index is not None:
-                block_row, block_col = pos_to_coords(block_index, args.h, args.w)
-
+            if game_state.total_steps == args.b:
+                if args.generate_cf:
+                    alternative_game_state = deepcopy(game_state)
+                    runs.append(
+                        alternative_game_state
+                    )  # save the alternative run to simulate it later
+                spawn_random_blocks(game_state, n=args.add_blocks)
                 if args.v:
-                    block_msg = (
-                        f"Random block spawned at {chr(ord('A') + block_row)}"
-                        f"{chr(ord('A') + block_col)} (server index {block_index})"
+                    print("Intermediate board state:")
+                    print(board_visual(game_state.board))
+
+        if args.generate_cf:
+            if args.v:
+                print(
+                    "First universe is over. Simulation of the alternative universe..."
+                )
+            if len(runs) == 1:
+                if args.v:
+                    print(
+                        "The simulation is over before the branching point. Finishing the run..."
                     )
-                    print(block_msg)
-                    board_str = board_visual(game_state.board)
-                    print(board_str)
-            time.sleep(0.1)
+            else:
+                game_state = runs[-1]
+                spawn_random_blocks(game_state, n=args.add_blocks)
+                is_simulation_over = False
+
+                while not is_simulation_over:
+                    is_server_ready = False
+                    cmd = board_to_cmd(game_state, args)
+                    sio.emit("new game", {"args": cmd})
+
+                    # Wait until the server has processed and made a move.
+                    while not is_server_ready:
+                        time.sleep(0.1)
+
     except KeyboardInterrupt:
         print("Simulation interrupted by user.")
     finally:
@@ -460,10 +518,11 @@ def main() -> None:
         sio.disconnect()
         container.stop()
         with open(args.output, "w") as f:
-            f.write(game_state.__repr__())
-        print(
-            f"Container stopped. Simulation ended. Game history saved to {args.output}"
-        )
+            f.write(runs.__repr__())
+        if args.v:
+            print(
+                f"Container stopped. Simulation ended. Game history saved to {args.output}"
+            )
 
 
 if __name__ == "__main__":
